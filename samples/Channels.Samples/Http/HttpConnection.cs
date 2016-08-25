@@ -42,6 +42,8 @@ namespace Channels.Samples.Http
 
         private bool _autoChunk;
 
+        private ParsingState _state = ParsingState.StartLine;
+
         public HttpConnection(IHttpApplication<TContext> application, IReadableChannel input, IWritableChannel output)
         {
             _application = application;
@@ -59,6 +61,7 @@ namespace Channels.Samples.Http
                 await _input;
 
                 var buffer = _input.BeginRead();
+                var consumed = buffer.Start;
 
                 bool needMoreData = true;
 
@@ -70,40 +73,46 @@ namespace Channels.Samples.Http
 
                 try
                 {
-                    var delim = buffer.IndexOf(ref _vectorSpaces);
-                    if (delim.IsEnd)
+                    if (_state == ParsingState.StartLine)
                     {
-                        continue;
+                        var delim = buffer.IndexOf(ref _vectorSpaces);
+                        if (delim.IsEnd)
+                        {
+                            continue;
+                        }
+
+                        var method = buffer.Slice(0, delim);
+                        Method = method.Clone();
+
+                        // Skip ' '
+                        buffer = buffer.Slice(delim).Slice(1);
+
+                        delim = buffer.IndexOf(ref _vectorSpaces);
+                        if (delim.IsEnd)
+                        {
+                            continue;
+                        }
+
+                        var path = buffer.Slice(0, delim);
+                        Path = path.Clone();
+
+                        // Skip ' '
+                        buffer = buffer.Slice(delim).Slice(1);
+
+                        delim = buffer.IndexOf(ref _vectorLFs);
+                        if (delim.IsEnd)
+                        {
+                            continue;
+                        }
+
+                        var httpVersion = buffer.Slice(0, delim).Trim();
+                        HttpVersion = httpVersion.Clone();
+
+                        buffer = buffer.Slice(delim).Slice(1);
+
+                        consumed = buffer.Start;
+                        _state = ParsingState.Headers;
                     }
-
-                    var method = buffer.Slice(0, delim);
-                    Method = method.Clone();
-
-                    // Skip ' '
-                    buffer = buffer.Slice(delim).Slice(1);
-
-                    delim = buffer.IndexOf(ref _vectorSpaces);
-                    if (delim.IsEnd)
-                    {
-                        continue;
-                    }
-
-                    var path = buffer.Slice(0, delim);
-                    Path = path.Clone();
-
-                    // Skip ' '
-                    buffer = buffer.Slice(delim).Slice(1);
-
-                    delim = buffer.IndexOf(ref _vectorLFs);
-                    if (delim.IsEnd)
-                    {
-                        continue;
-                    }
-
-                    var httpVersion = buffer.Slice(0, delim).Trim();
-                    HttpVersion = httpVersion.Clone();
-
-                    buffer = buffer.Slice(delim).Slice(1);
 
                     // Parse headers
                     // key: value\r\n
@@ -141,7 +150,7 @@ namespace Channels.Samples.Http
                         var headerValue = default(ReadableBuffer);
 
                         // :
-                        delim = buffer.IndexOf(ref _vectorColons);
+                        var delim = buffer.IndexOf(ref _vectorColons);
                         if (delim.IsEnd)
                         {
                             break;
@@ -162,11 +171,13 @@ namespace Channels.Samples.Http
                         buffer = buffer.Slice(delim).Slice(1);
 
                         RequestHeaders.SetHeader(ref headerName, ref headerValue);
+
+                        consumed = buffer.Start;
                     }
                 }
                 finally
                 {
-                    _input.EndRead(buffer.Start);
+                    _input.EndRead(consumed);
                 }
 
                 if (needMoreData)
@@ -220,6 +231,7 @@ namespace Channels.Samples.Http
             HasStarted = false;
             StatusCode = 200;
             _autoChunk = false;
+            _state = ParsingState.StartLine;
 
             HttpVersion.Dispose();
             Method.Dispose();
@@ -271,6 +283,12 @@ namespace Channels.Samples.Http
         private void WriteEndResponse(ref WritableBuffer buffer)
         {
             buffer.Write(_chunkedEndBytes, 0, _chunkedEndBytes.Length);
+        }
+
+        private enum ParsingState
+        {
+            StartLine,
+            Headers
         }
     }
 }
